@@ -1,13 +1,13 @@
 import sys, os
 import numpy as np
 import soundfile as sf
-from speechbrain.pretrained.interfaces import foreign_class
+
 
 from sparc import load_model
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QListWidget, QListWidgetItem, QMessageBox,
-    QLabel, QDoubleSpinBox, QGroupBox, QSpinBox, QSlider, QComboBox
+    QLabel, QDoubleSpinBox, QGroupBox, QSpinBox, QSlider, QComboBox, QCheckBox
 )
 from PySide6.QtCore import Qt
 
@@ -22,15 +22,16 @@ from sklearn.decomposition import PCA
 #coder = load_model("multi", device="cuda:0")
 coder = load_model("en+", device="cuda:0")
 
-
-
-lid = foreign_class(source="TalTechNLP/voxlingua107-xls-r-300m-wav2vec", pymodule_file="encoder_wav2vec_classifier.py", classname="EncoderWav2vecClassifier", hparams_file='inference_wav2vec.yaml', savedir="tmp")
+USE_LID = False
+if USE_LID:
+    from speechbrain.pretrained.interfaces import foreign_class
+    lid = foreign_class(source="TalTechNLP/voxlingua107-xls-r-300m-wav2vec", pymodule_file="encoder_wav2vec_classifier.py", classname="EncoderWav2vecClassifier", hparams_file='inference_wav2vec.yaml', savedir="tmp")
 class ArticulatorEditor(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Articulator Trajectory Editor")
         self.setGeometry(100, 100, 1200, 800)
-
+        self.padding = 20
         # --- Data Model ---
         self.original_trajectories = {}
         self.editable_trajectories = {}
@@ -57,18 +58,23 @@ class ArticulatorEditor(QMainWindow):
         left_panel = QWidget(); left_layout = QVBoxLayout(left_panel)
         left_panel.setMaximumWidth(250)
 
-        self.btn_load = QPushButton("Load Trajectories (.npy)")
-        self.btn_lid = QPushButton("Identify language")
+        self.btn_load = QPushButton("Load trajectories (.wav)")
+        if USE_LID:
+            self.btn_lid = QPushButton("Identify language")
         self.btn_play = QPushButton("▶ Play Synthesized Audio")
-        self.btn_reset = QPushButton("Reset All Trajectories")
+        self.btn_reset = QPushButton("Reset Selected Trajectories")
         self.btn_dec = QPushButton("Flatten Selected Trajectory")
         self.btn_inc = QPushButton("Exaggerate Selected Trajectory")
         # --- NEW: Speaker Control Group ---
         speaker_group = QGroupBox("Speaker Conversion")
         speaker_layout = QVBoxLayout()
         self.speaker_selector_combo = QComboBox()
+
         speaker_layout.addWidget(QLabel("Synthesize with Speaker:"))
         speaker_layout.addWidget(self.speaker_selector_combo)
+
+        self.check_pitch_stats = QCheckBox("Apply Speaker's Pitch Stats")
+        speaker_layout.addWidget(self.check_pitch_stats)
         speaker_group.setLayout(speaker_layout)
         # --- NEW: PCA Control Group ---
         pca_group = QGroupBox("PCA Controls (for EMA)")
@@ -92,8 +98,22 @@ class ArticulatorEditor(QMainWindow):
         self.radius_spinner.setPrefix("Radius: "); self.radius_spinner.setSingleStep(5.0)
         sculpt_layout.addWidget(self.radius_spinner)
         sculpt_group.setLayout(sculpt_layout)
+        
+        # --- NEW: Global Manipulation Controls (Simplified) ---
+        global_group = QGroupBox("Manipulation Settings")
+        global_layout = QVBoxLayout()
+        self.check_edit_selected = QCheckBox("Edit All Selected")
+        self.check_global_edit = QCheckBox("Enable Global Edit")
 
-        left_layout.addWidget(self.btn_load); left_layout.addWidget(self.btn_lid)
+        #global_layout.addWidget(QLabel("No Shift: Magnitude"))
+        global_layout.addWidget(self.check_edit_selected)
+        global_layout.addWidget(self.check_global_edit)
+        global_layout.addWidget(QLabel("Shift+Drag to Time Stretch"))
+        global_group.setLayout(global_layout)
+
+        left_layout.addWidget(self.btn_load);
+        if USE_LID:
+            left_layout.addWidget(self.btn_lid)
         left_layout.addSpacing(10); left_layout.addWidget(self.btn_play)
         left_layout.addSpacing(10); left_layout.addWidget(self.btn_reset)
         left_layout.addSpacing(10); left_layout.addWidget(self.btn_dec)
@@ -105,10 +125,9 @@ class ArticulatorEditor(QMainWindow):
 
         left_layout.addWidget(speaker_group) # NEW
         left_layout.addSpacing(10); left_layout.addWidget(pca_group)
-
-        
-        
+ 
         left_layout.addWidget(sculpt_group)
+        left_layout.addWidget(global_group) # NEW
         left_layout.addWidget(QLabel("Parameters:")); left_layout.addWidget(self.articulator_list)
         
         plot_panel = QWidget(); plot_layout = QVBoxLayout(plot_panel)
@@ -119,9 +138,10 @@ class ArticulatorEditor(QMainWindow):
 
         # --- Connections ---
         self.btn_load.clicked.connect(self.load_file)
-        self.btn_lid.clicked.connect(self.identify_language)
+        if USE_LID:
+            self.btn_lid.clicked.connect(self.identify_language)
         self.btn_play.clicked.connect(self.play_audio)
-        self.btn_reset.clicked.connect(self.reset_all_trajectories)
+        self.btn_reset.clicked.connect(self.reset_selected_trajectories)
         self.btn_dec.clicked.connect(self.decrease_trajectory_var)
         self.btn_inc.clicked.connect(self.increase_trajectory_var)
         self.btn_train_pca.clicked.connect(self._train_pca) # NEW
@@ -129,8 +149,6 @@ class ArticulatorEditor(QMainWindow):
         self.canvas.mpl_connect('button_press_event', self.on_press)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
         self.canvas.mpl_connect('button_release_event', self.on_release)
-        
-        #self.load_demo_data(); self.update_plot()
 
       # --- NEW: Helper function for the speaker dropdown ---
     def _update_speaker_selector(self, set_current=None):
@@ -247,7 +265,9 @@ class ArticulatorEditor(QMainWindow):
             if widget is not None: widget.deleteLater()
         self.pca_sliders = []
         self.update_plot()
-
+    
+  
+     
       # --- Data Handling (MODIFIED) ---
     def _setup_data(self, data_dict, speaker_name="Unknown"):
         self.reset_all_trajectories()
@@ -256,6 +276,32 @@ class ArticulatorEditor(QMainWindow):
         for key, value in data_dict.items():
             if isinstance(value, np.ndarray) and value.ndim == 2: self.original_trajectories[key] = value
             else: self.static_metadata[key] = value
+        # --- NEW: Add zero-padding to both sides of the trajectories ---
+        padding_width = 30
+        print(f"Adding {padding_width} zeros of padding to each side of the trajectories.")
+        for key in self.original_trajectories:
+            trajectory = self.original_trajectories[key]
+            # The padding is applied to the time axis (0), not the feature axis (1)
+            padded_trajectory = np.pad(trajectory, pad_width=((self.padding, self.padding), (0, 0)), mode='constant', constant_values=0)
+            self.original_trajectories[key] = padded_trajectory
+
+         # 2. NEW: Enforce consistent lengths for all trajectories
+        if not self.original_trajectories:
+            print("Warning: No editable trajectories found in the loaded data.")
+            return
+
+        lengths = [v.shape[0] for v in self.original_trajectories.values()]
+        min_len = min(lengths)
+        
+        if len(set(lengths)) > 1:
+            print(f"Warning: Inconsistent trajectory lengths found {set(lengths)}. Truncating all to minimum length: {min_len}.")
+            # Truncate all trajectories to the minimum length
+            for key in self.original_trajectories:
+                self.original_trajectories[key] = self.original_trajectories[key][:min_len]
+            # Also update ft_len if it exists, to maintain data integrity
+            if 'ft_len' in self.static_metadata:
+                print(f"Updating 'ft_len' metadata from {self.static_metadata['ft_len']} to {min_len}.")
+                self.static_metadata['ft_len'] = min_len
         self.editable_trajectories = {k: v.copy() for k, v in self.original_trajectories.items()}
         print (self.static_metadata)
         # --- NEW: Capture Speaker Embedding ---
@@ -343,8 +389,14 @@ class ArticulatorEditor(QMainWindow):
         if self.editable_trajectories:
             #self.btn_play.setText("Synthesizing...")
             QApplication.processEvents()
+            
+            xmin, xmax = self.figure.get_axes()[0].get_xlim()
+            xmin = max(xmin, self.padding)
+            print(xmin, xmax)
             try:
                 full_dict_for_synth = self.editable_trajectories.copy()
+                for key in full_dict_for_synth:
+                    full_dict_for_synth[key] = full_dict_for_synth[key][int(xmin):int(xmax)]
                 full_dict_for_synth.update(self.static_metadata)
 
                 # --- NEW: Override speaker embedding based on user selection ---
@@ -352,9 +404,9 @@ class ArticulatorEditor(QMainWindow):
                 if selected_speaker and selected_speaker in self.speaker_embeddings:
                     print(f"Synthesizing with selected speaker: {selected_speaker}")
                     full_dict_for_synth['spk_emb'] = self.speaker_embeddings[selected_speaker]
-                    mean, std =  self.speaker_pitch_stats[selected_speaker]
-                    
-                    full_dict_for_synth['pitch'] = self._apply_speaker_pitch_range(full_dict_for_synth['pitch'], mean, std)
+                    if self.check_pitch_stats.isChecked():
+                        mean, std =  self.speaker_pitch_stats[selected_speaker]
+                        full_dict_for_synth['pitch'] = self._apply_speaker_pitch_range(full_dict_for_synth['pitch'], mean, std)
                     
                 else:
                     print("Synthesizing with original speaker.")
@@ -390,43 +442,203 @@ class ArticulatorEditor(QMainWindow):
             ax.set_ylabel(name); ax.grid(True)
         axes[-1].set_xlabel("Time (frames)")
         if xlim: axes[0].set_xlim(xlim)
+        #xmin, xmax = axes[0].get_xlim()
+        #axes[0].set_xlim(self.padding, -self.padding)
         self.figure.tight_layout(); self.figure.subplots_adjust(hspace=0.1)
         self.canvas.draw()
 
     def on_press(self, event):
-        if self.toolbar.mode or event.button != 1: return
-        map_idx = self.ax_to_map_idx.get(event.inaxes)
-        if map_idx is None or event.xdata is None: return
-        param_info = self.param_map[map_idx]
-        key, col = param_info['key'], param_info['col']
+        if self.toolbar.mode or event.button != 1 or event.xdata is None:
+            return
+
+        is_shift_pressed = QApplication.keyboardModifiers() == Qt.ShiftModifier
+        mode = None
+
+        if self.check_global_edit.isChecked():
+            mode = 'global_time' if is_shift_pressed else 'global_magnitude'
+        else:
+            mode = 'time_stretch' if is_shift_pressed else 'sculpt'
+
         self._drag_info = {
-            'map_idx': map_idx, 'start_x': event.xdata, 'start_y': event.ydata,
-            'trajectory_at_start': self.editable_trajectories[key][:, col].copy()
+            'mode': mode,
+            'start_x': event.xdata,
+            'start_y_data': event.ydata, # For magnitude edits
+            'start_y_pixels': event.y,      # For time edits
+            'trajectories_at_start': {k: v.copy() for k, v in self.editable_trajectories.items()}
         }
+        
+        if mode == 'sculpt':
+            map_idx = self.ax_to_map_idx.get(event.inaxes)
+            if map_idx is None:
+                self._drag_info = {}
+                return
+            self._drag_info['map_idx'] = map_idx
 
 
     def on_motion(self, event):
+        if not self._drag_info or event.inaxes is None or event.y is None: return
+        
+        mode = self._drag_info.get('mode')
+        # Check if xdata/ydata is needed and available
+        if mode in ['sculpt', 'global_magnitude'] and event.ydata is None:
+            return
+        if mode == 'sculpt' and event.xdata is None:
+            return
 
-        if not self._drag_info or event.inaxes is None or event.ydata is None: return
-        map_idx = self._drag_info['map_idx']
-        if self.ax_to_map_idx.get(event.inaxes) != map_idx: return
-        param_info = self.param_map[map_idx]
-        key, col = param_info['key'], param_info['col']
-        num_frames = self.editable_trajectories[key].shape[0]
-        x_indices = np.arange(num_frames)
+        if mode == 'sculpt':
+            self.on_sculpt_motion(event)
+        elif mode == 'time_stretch':
+            self.on_time_stretch_motion(event)
+        elif mode == 'global_time':
+            self.on_global_time_motion(event)
+        elif mode == 'global_magnitude':
+            self.on_global_magnitude_motion(event)
+
+
+    def on_sculpt_motion(self, event):
+        # This function applies both time (X) and magnitude (Y) edits
+        # to one or all currently selected trajectories.
+        if self.check_edit_selected.isChecked():
+            selected_indices = self._get_selected_map_indices()
+        else:
+            selected_indices = [self._drag_info['map_idx']]
+            
+
+        if not selected_indices: return
+
+        start_trajectories = self._drag_info['trajectories_at_start']
+        num_frames = next(iter(start_trajectories.values())).shape[0]
+        original_time = np.arange(num_frames)
+        
+        # --- 1. Calculate Common Deformation Profiles ---
         radius = self.radius_spinner.value()
         sigma = radius / 3.0
         center_x = self._drag_info['start_x']
-        gaussian = np.exp(-0.5 * ((x_indices - center_x) / sigma) ** 2)
-        delta_y = event.ydata - self._drag_info['start_y']
+        gaussian = np.exp(-0.5 * ((original_time - center_x) / sigma) ** 2)
+
+        # Horizontal (time) shift profile
+        delta_x = event.xdata - self._drag_info['start_x']
+        shift_profile = delta_x * gaussian
+        
+        # Vertical (magnitude) deformation profile
+        delta_y = event.ydata - self._drag_info['start_y_data']
         deformation = delta_y * gaussian
-        self.editable_trajectories[key][:, col] = self._drag_info['trajectory_at_start'] + deformation
-        self.artists[map_idx]['edit'].set_ydata(self.editable_trajectories[key][:, col])
+
+        # --- 2. Create the Time Warp Map (shared by all selected trajectories) ---
+        proposed_map = original_time + shift_profile
+        warped_time_map = original_time # Default to no change
+        if proposed_map[-1] > proposed_map[0]: # Check for valid, monotonic map
+            # Normalize to preserve total duration
+            normalized_map = (proposed_map - proposed_map[0]) * (num_frames - 1) / (proposed_map[-1] - proposed_map[0])
+            warped_time_map = normalized_map
+        
+        # --- 3. Apply Edits to Selected Trajectories ---
+        intermediate_trajectories = {k: v.copy() for k, v in start_trajectories.items()}
+
+        for map_idx in selected_indices:
+            param_info = self.param_map[map_idx]
+            key, col = param_info['key'], param_info['col']
+            
+            # Get the original column data at the start of the drag
+            original_col_data = start_trajectories[key][:, col]
+
+            # Apply time warp first by resampling
+            time_warped_col = np.interp(original_time, warped_time_map, original_col_data)
+
+            # Then, apply the magnitude deformation on top
+            final_col = time_warped_col + deformation
+            
+            # Store the result
+            intermediate_trajectories[key][:, col] = final_col
+        
+        # --- 4. Commit Changes and Redraw ---
+        self.editable_trajectories = intermediate_trajectories
+        for idx, artist_dict in self.artists.items():
+            p_info = self.param_map[idx]
+            k, c = p_info['key'], p_info['col']
+            artist_dict['edit'].set_ydata(self.editable_trajectories[k][:, c])
+        
+        self.canvas.draw_idle()
+
+
+    def on_time_stretch_motion(self, event):
+        start_trajectories = self._drag_info['trajectories_at_start']
+        if not start_trajectories: return
+        
+        delta_y_pixels = self._drag_info['start_y_pixels'] - event.y
+        stretch_factor = 1.0 + (delta_y_pixels / self.canvas.height()) * 2.0
+        stretch_factor = max(0.1, stretch_factor)
+
+        radius = self.radius_spinner.value()
+        sigma = radius / 3.0
+        center_x = self._drag_info['start_x']
+        
+        num_frames = next(iter(start_trajectories.values())).shape[0]
+        original_time = np.arange(num_frames)
+        
+        gaussian = np.exp(-0.5 * ((original_time - center_x) / sigma) ** 2)
+        local_stretch = 1.0 + (stretch_factor - 1.0) * gaussian
+        
+        new_time_for_original_samples = np.insert(np.cumsum(local_stretch), 0, 0)[:-1]
+        new_total_duration = np.sum(local_stretch)
+        new_num_frames = int(round(new_total_duration))
+        if new_num_frames < 2: return
+        new_time_axis = np.arange(new_num_frames)
+
+        for key, start_trajectory in start_trajectories.items():
+            resampled_trajectory = np.zeros((new_num_frames, start_trajectory.shape[1]), dtype=start_trajectory.dtype)
+            for i in range(start_trajectory.shape[1]):
+                resampled_trajectory[:, i] = np.interp(
+                    new_time_axis, new_time_for_original_samples, start_trajectory[:, i]
+                )
+            self.editable_trajectories[key] = resampled_trajectory
+
+        self.update_plot()
+
+    def on_global_time_motion(self, event):
+        delta_y_pixels = self._drag_info['start_y_pixels'] - event.y
+        scale_factor = 1.0 + (delta_y_pixels / self.canvas.height()) * 2.0
+        scale_factor = max(0.1, scale_factor)
+
+        start_trajectories = self._drag_info['trajectories_at_start']
+        num_frames_start = next(iter(start_trajectories.values())).shape[0]
+        new_num_frames = int(round(num_frames_start * scale_factor))
+
+        if new_num_frames < 2: return
+
+        original_time_axis = np.arange(num_frames_start)
+        new_time_axis = np.linspace(0, num_frames_start - 1, num=new_num_frames)
+
+        for key, start_traj in start_trajectories.items():
+            new_traj = np.zeros((new_num_frames, start_traj.shape[1]), dtype=start_traj.dtype)
+            for i in range(start_traj.shape[1]):
+                new_traj[:, i] = np.interp(new_time_axis, original_time_axis, start_traj[:, i])
+            self.editable_trajectories[key] = new_traj
+        
+        self.update_plot()
+
+
+    def on_global_magnitude_motion(self, event):
+        delta_y = event.ydata - self._drag_info['start_y_data']
+        
+        selected_indices = self._get_selected_map_indices()
+        if not selected_indices: return
+
+        for map_idx in selected_indices:
+            param_info = self.param_map[map_idx]
+            key, col = param_info['key'], param_info['col']
+            
+            start_traj_col = self._drag_info['trajectories_at_start'][key][:, col]
+            new_traj_col = start_traj_col + delta_y
+            self.editable_trajectories[key][:, col] = new_traj_col
+            
+            if map_idx in self.artists:
+                self.artists[map_idx]['edit'].set_ydata(new_traj_col)
 
         self.canvas.draw_idle()
 
+
     def on_release(self, event):
-        #self.canvas.draw_idle()
         self._drag_info = {}
     
     def _get_selected_map_indices(self): return {self.articulator_list.item(i).data(Qt.UserRole) for i in range(self.articulator_list.count()) if self.articulator_list.item(i).isSelected()}
@@ -443,16 +655,14 @@ class ArticulatorEditor(QMainWindow):
         self.articulator_list.blockSignals(False)
 
     def reset_selected_trajectories(self):
-        # This now only resets non-EMA channels, use the global reset for everything
         if not self.original_trajectories: return
         selected_map_indices = self._get_selected_map_indices()
         if not selected_map_indices: QMessageBox.information(self, "Info", "Select parameters to reset."); return
         for map_idx in selected_map_indices:
             param_info = self.param_map[map_idx]
             key, col = param_info['key'], param_info['col']
-            # Only reset non-ema, as ema is controlled by PCA or global reset
-            if key != 'ema':
-                self.editable_trajectories[key][:, col] = self.original_trajectories[key][:, col]
+            #if key != 'ema':
+            self.editable_trajectories[key][:, col] = self.original_trajectories[key][:, col]
         self.update_plot()
 
     def increase_trajectory_var(self):
