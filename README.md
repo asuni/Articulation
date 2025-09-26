@@ -1,3 +1,3 @@
-in language identification environment, 
+GUI for articulatory and prosody manipulation
 pip install PySide6 speech-articulatory-coding
-(not intended to really work yet)
+
