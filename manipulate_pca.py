@@ -18,9 +18,10 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 # --- NEW: Imports for PCA ---
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+import torch
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-#coder = load_model("multi", device="cuda:0")
-coder = load_model("en+", device="cuda:0")
+coder = load_model("en+", device=device)
 
 USE_LID = False
 if USE_LID:
@@ -423,7 +424,7 @@ class ArticulatorEditor(QMainWindow):
         os.system("play ppa_resynth.wav trim 0 5  &")
         
     def update_plot(self):
-        print("updating")
+        #print("updating")
         if not self.editable_trajectories: return
         xlim = self.figure.get_axes()[0].get_xlim() if self.figure.get_axes() else None
         self.figure.clear(); self.artists = {}; self.ax_to_map_idx = {}
@@ -609,8 +610,10 @@ class ArticulatorEditor(QMainWindow):
         self.update_plot()
 
     def on_global_time_motion(self, event):
-        delta_y_pixels = self._drag_info['start_y_pixels'] - event.y
-        scale_factor = 1.0 + (delta_y_pixels / self.canvas.height()) * 2.0
+
+        delta_x_pixels = event.x - self._drag_info['start_x_pixels']
+        scale_factor = 2 ** (delta_x_pixels / 100.)
+        #scale_factor = 1.0 + (delta_x_pixels / self.canvas.height()) * 2.0
         scale_factor = max(0.1, scale_factor)
 
         start_trajectories = self._drag_info['trajectories_at_start']
@@ -634,6 +637,7 @@ class ArticulatorEditor(QMainWindow):
     def on_global_magnitude_motion(self, event):
         delta_y = event.ydata - self._drag_info['start_y_data']
         
+        
         selected_indices = self._get_selected_map_indices()
         if not selected_indices: return
 
@@ -653,7 +657,8 @@ class ArticulatorEditor(QMainWindow):
 
     def on_release(self, event):
         self._drag_info = {}
-    
+        self.update_plot()
+        
     def _get_selected_map_indices(self): return {self.articulator_list.item(i).data(Qt.UserRole) for i in range(self.articulator_list.count()) if self.articulator_list.item(i).isSelected()}
     
     def populate_articulator_list(self):
