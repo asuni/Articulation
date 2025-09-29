@@ -40,7 +40,7 @@ class ArticulatorEditor(QMainWindow):
         self.current_filepath = None
         self._drag_info = {}
         self.ax_to_map_idx = {}; self.artists = {}
-
+        self.new_file = True
         # --- NEW: PCA Model State ---
         self.pca_scaler = None
         self.pca_model = None
@@ -94,8 +94,8 @@ class ArticulatorEditor(QMainWindow):
         sculpt_group = QGroupBox("Sculpting Controls")
         sculpt_layout = QVBoxLayout()
         self.radius_spinner = QDoubleSpinBox()
-        self.radius_spinner.setRange(1.0, 500.0); self.radius_spinner.setValue(30.0)
-        self.radius_spinner.setPrefix("Radius: "); self.radius_spinner.setSingleStep(5.0)
+        self.radius_spinner.setRange(1.0, 100.0); self.radius_spinner.setValue(20.0)
+        self.radius_spinner.setPrefix("Radius: "); self.radius_spinner.setSingleStep(2.5)
         sculpt_layout.addWidget(self.radius_spinner)
         sculpt_group.setLayout(sculpt_layout)
         
@@ -343,6 +343,7 @@ class ArticulatorEditor(QMainWindow):
                 self.load_wav(filepath)
                 self.current_filepath = filepath
                 self.setWindowTitle(f"Editor - {filepath}")
+                self.new_file=True
                 self.update_plot()
 
             except Exception as e:
@@ -441,7 +442,9 @@ class ArticulatorEditor(QMainWindow):
             self.artists[map_idx] = {'orig': orig_line, 'edit': edit_line, 'ax': ax}
             ax.set_ylabel(name); ax.grid(True)
         axes[-1].set_xlabel("Time (frames)")
-        if xlim: axes[0].set_xlim(xlim)
+        if xlim and not self.new_file:
+            axes[0].set_xlim(xlim)
+        self.new_file = False
         #xmin, xmax = axes[0].get_xlim()
         #axes[0].set_xlim(self.padding, -self.padding)
         self.figure.tight_layout(); self.figure.subplots_adjust(hspace=0.1)
@@ -464,6 +467,7 @@ class ArticulatorEditor(QMainWindow):
             'start_x': event.xdata,
             'start_y_data': event.ydata, # For magnitude edits
             'start_y_pixels': event.y,      # For time edits
+            'start_x_pixels': event.x,      # For time edits
             'trajectories_at_start': {k: v.copy() for k, v in self.editable_trajectories.items()}
         }
         
@@ -564,10 +568,19 @@ class ArticulatorEditor(QMainWindow):
     def on_time_stretch_motion(self, event):
         start_trajectories = self._drag_info['trajectories_at_start']
         if not start_trajectories: return
-        
+        """
         delta_y_pixels = self._drag_info['start_y_pixels'] - event.y
         stretch_factor = 1.0 + (delta_y_pixels / self.canvas.height()) * 2.0
         stretch_factor = max(0.1, stretch_factor)
+        """
+        delta_x_pixels = event.x - self._drag_info['start_x_pixels']
+
+        stretch_factor = 2 ** (delta_x_pixels / 100.) # / self.canvas.width()) 
+        # Calculate stretch factor based on horizontal movement
+        # A positive delta (drag right) increases the factor, stretching time
+        # A negative delta (drag left) decreases the factor, squeezing time
+        #stretch_factor = 1.0 + (delta_x_pixels / self.canvas.width()) * 2.0
+       
 
         radius = self.radius_spinner.value()
         sigma = radius / 3.0
@@ -577,8 +590,8 @@ class ArticulatorEditor(QMainWindow):
         original_time = np.arange(num_frames)
         
         gaussian = np.exp(-0.5 * ((original_time - center_x) / sigma) ** 2)
-        local_stretch = 1.0 + (stretch_factor - 1.0) * gaussian
-        
+        local_stretch = (1.0 + (stretch_factor - 1.0) * gaussian)
+
         new_time_for_original_samples = np.insert(np.cumsum(local_stretch), 0, 0)[:-1]
         new_total_duration = np.sum(local_stretch)
         new_num_frames = int(round(new_total_duration))
@@ -658,11 +671,14 @@ class ArticulatorEditor(QMainWindow):
         if not self.original_trajectories: return
         selected_map_indices = self._get_selected_map_indices()
         if not selected_map_indices: QMessageBox.information(self, "Info", "Select parameters to reset."); return
-        for map_idx in selected_map_indices:
-            param_info = self.param_map[map_idx]
-            key, col = param_info['key'], param_info['col']
-            #if key != 'ema':
-            self.editable_trajectories[key][:, col] = self.original_trajectories[key][:, col]
+        try:
+            for map_idx in selected_map_indices:
+                param_info = self.param_map[map_idx]
+                key, col = param_info['key'], param_info['col']
+                #if key != 'ema':
+                self.editable_trajectories[key][:, col] = self.original_trajectories[key][:, col]
+        except:
+            self.reset_all_trajectories()
         self.update_plot()
 
     def increase_trajectory_var(self):
