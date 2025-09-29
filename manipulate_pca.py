@@ -463,6 +463,11 @@ class ArticulatorEditor(QMainWindow):
         else:
             mode = 'time_stretch' if is_shift_pressed else 'sculpt'
 
+        # OPTIMIZATION: Hide original lines during time stretch for faster redraw.
+        if mode in ['time_stretch', 'global_time']:
+            for artist in self.artists.values():
+                artist['orig'].set_visible(False)
+
         self._drag_info = {
             'mode': mode,
             'start_x': event.xdata,
@@ -501,88 +506,60 @@ class ArticulatorEditor(QMainWindow):
 
 
     def on_sculpt_motion(self, event):
-        # This function applies both time (X) and magnitude (Y) edits
-        # to one or all currently selected trajectories.
+        # OPTIMIZATION: This function is streamlined for performance.
         if self.check_edit_selected.isChecked():
             selected_indices = self._get_selected_map_indices()
         else:
-            selected_indices = [self._drag_info['map_idx']]
-            
-
+            selected_indices = {self._drag_info['map_idx']}
+        
         if not selected_indices: return
 
         start_trajectories = self._drag_info['trajectories_at_start']
         num_frames = next(iter(start_trajectories.values())).shape[0]
         original_time = np.arange(num_frames)
         
-        # --- 1. Calculate Common Deformation Profiles ---
         radius = self.radius_spinner.value()
         sigma = radius / 3.0
         center_x = self._drag_info['start_x']
         gaussian = np.exp(-0.5 * ((original_time - center_x) / sigma) ** 2)
 
-        # Horizontal (time) shift profile
         delta_x = event.xdata - self._drag_info['start_x']
         shift_profile = delta_x * gaussian
         
-        # Vertical (magnitude) deformation profile
         delta_y = event.ydata - self._drag_info['start_y_data']
         deformation = delta_y * gaussian
 
-        # --- 2. Create the Time Warp Map (shared by all selected trajectories) ---
         proposed_map = original_time + shift_profile
-        warped_time_map = original_time # Default to no change
-        if proposed_map[-1] > proposed_map[0]: # Check for valid, monotonic map
-            # Normalize to preserve total duration
+        warped_time_map = original_time
+        if proposed_map[-1] > proposed_map[0]:
             normalized_map = (proposed_map - proposed_map[0]) * (num_frames - 1) / (proposed_map[-1] - proposed_map[0])
             warped_time_map = normalized_map
         
-        # --- 3. Apply Edits to Selected Trajectories ---
-        intermediate_trajectories = {k: v.copy() for k, v in start_trajectories.items()}
-
         for map_idx in selected_indices:
             param_info = self.param_map[map_idx]
             key, col = param_info['key'], param_info['col']
             
-            # Get the original column data at the start of the drag
             original_col_data = start_trajectories[key][:, col]
-
-            # Apply time warp first by resampling
             time_warped_col = np.interp(original_time, warped_time_map, original_col_data)
-
-            # Then, apply the magnitude deformation on top
             final_col = time_warped_col + deformation
             
-            # Store the result
-            intermediate_trajectories[key][:, col] = final_col
-        
-        # --- 4. Commit Changes and Redraw ---
-        self.editable_trajectories = intermediate_trajectories
-        for idx, artist_dict in self.artists.items():
-            p_info = self.param_map[idx]
-            k, c = p_info['key'], p_info['col']
-            artist_dict['edit'].set_ydata(self.editable_trajectories[k][:, c])
+            self.editable_trajectories[key][:, col] = final_col
+            
+            # Update the artist directly instead of a full redraw
+            if map_idx in self.artists:
+                self.artists[map_idx]['edit'].set_ydata(final_col)
         
         self.canvas.draw_idle()
 
 
     def on_time_stretch_motion(self, event):
+        # OPTIMIZATION: Replaced full update_plot() with lightweight artist data update.
         start_trajectories = self._drag_info['trajectories_at_start']
         if not start_trajectories: return
-        """
-        delta_y_pixels = self._drag_info['start_y_pixels'] - event.y
-        stretch_factor = 1.0 + (delta_y_pixels / self.canvas.height()) * 2.0
-        stretch_factor = max(0.1, stretch_factor)
-        """
+
         delta_x_pixels = event.x - self._drag_info['start_x_pixels']
-
-        stretch_factor = 2 ** (delta_x_pixels / 100.) # / self.canvas.width()) 
-        # Calculate stretch factor based on horizontal movement
-        # A positive delta (drag right) increases the factor, stretching time
-        # A negative delta (drag left) decreases the factor, squeezing time
-        #stretch_factor = 1.0 + (delta_x_pixels / self.canvas.width()) * 2.0
-       
-
+        stretch_factor = 2 ** (delta_x_pixels / 100.0)
+        
         radius = self.radius_spinner.value()
         sigma = radius / 3.0
         center_x = self._drag_info['start_x']
@@ -607,13 +584,21 @@ class ArticulatorEditor(QMainWindow):
                 )
             self.editable_trajectories[key] = resampled_trajectory
 
-        self.update_plot()
+        # Lightweight redraw: update artist data and rescale axes
+        for map_idx, artist_dict in self.artists.items():
+            param_info = self.param_map[map_idx]
+            key, col = param_info['key'], param_info['col']
+            new_y_data = self.editable_trajectories[key][:, col]
+            artist_dict['edit'].set_data(new_time_axis, new_y_data)
+            #artist_dict['ax'].relim()
+            #artist_dict['ax'].autoscale_view(True, False) # Autoscale X, not Y
+
+        self.canvas.draw_idle()
 
     def on_global_time_motion(self, event):
-
+        # OPTIMIZATION: Replaced full update_plot() with lightweight artist data update.
         delta_x_pixels = event.x - self._drag_info['start_x_pixels']
         scale_factor = 2 ** (delta_x_pixels / 100.)
-        #scale_factor = 1.0 + (delta_x_pixels / self.canvas.height()) * 2.0
         scale_factor = max(0.1, scale_factor)
 
         start_trajectories = self._drag_info['trajectories_at_start']
@@ -623,20 +608,34 @@ class ArticulatorEditor(QMainWindow):
         if new_num_frames < 2: return
 
         original_time_axis = np.arange(num_frames_start)
-        new_time_axis = np.linspace(0, num_frames_start - 1, num=new_num_frames)
+        # This axis defines the points at which we sample the original data
+        sampling_time_axis = np.linspace(0, num_frames_start - 1, num=new_num_frames)
 
         for key, start_traj in start_trajectories.items():
             new_traj = np.zeros((new_num_frames, start_traj.shape[1]), dtype=start_traj.dtype)
             for i in range(start_traj.shape[1]):
-                new_traj[:, i] = np.interp(new_time_axis, original_time_axis, start_traj[:, i])
+                new_traj[:, i] = np.interp(sampling_time_axis, original_time_axis, start_traj[:, i])
             self.editable_trajectories[key] = new_traj
         
-        self.update_plot()
+        # BUG FIX: This new axis represents the actual frame indices for the *new* data.
+        # This is what the plot's x-axis should be.
+        plot_time_axis = np.arange(new_num_frames)
 
+        # Lightweight redraw: update artist data and rescale axes
+        for map_idx, artist_dict in self.artists.items():
+            param_info = self.param_map[map_idx]
+            key, col = param_info['key'], param_info['col']
+            new_y_data = self.editable_trajectories[key][:, col]
 
+            # Use the correct plot_time_axis for the x-data
+            artist_dict['edit'].set_data(plot_time_axis, new_y_data)
+            #artist_dict['ax'].relim()
+            #artist_dict['ax'].autoscale_view(tight=False, scalex=True, scaley=False) # Autoscale X, not Y
+            
+        self.canvas.draw_idle()
+        
     def on_global_magnitude_motion(self, event):
         delta_y = event.ydata - self._drag_info['start_y_data']
-        
         
         selected_indices = self._get_selected_map_indices()
         if not selected_indices: return
@@ -656,6 +655,7 @@ class ArticulatorEditor(QMainWindow):
 
 
     def on_release(self, event):
+        # A full update_plot() is desirable on release to ensure a clean state.
         self._drag_info = {}
         self.update_plot()
         
