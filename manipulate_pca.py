@@ -332,13 +332,20 @@ class ArticulatorEditor(QMainWindow):
 
 
     def load_wav(self,filepath):
+        if filepath.endswith("pkl") or filepath.endswith('pickle'):
+            import pickle
+            with open(filepath, 'rb') as f:
+                param_dict = pickle.load(f)
+            if "pitch_stats" not in param_dict:
+                param_dict["pitch_stats"] = np.array([150.0, 50.0])
+        else:
+            param_dict = coder.encode(filepath) #"test_wavs/fact_color_0014.wav")
 
-        param_dict = coder.encode(filepath) #"test_wavs/fact_color_0014.wav")
         self._setup_data(param_dict, speaker_name=os.path.basename(filepath).split('.')[0])
 
     def load_file(self):
 
-        filepath, _ = QFileDialog.getOpenFileName(self, "Open", "", "Audio files (*.wav)")
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open", "", "Audio files (*.wav);; pickled param dict (*.pkl)")
         if filepath:
             try:
                 self.load_wav(filepath)
